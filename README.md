@@ -9,9 +9,10 @@ app for becoming an RChain coop member
     - Country (?)
   - Password
   - Execute membership agreement
-    - >= 18 yrs old
+    - at least 18 yrs old
     - privacy policy???
   - not a robot (reCAPTCHA)
+  - payments
 
 
 ## Installation
