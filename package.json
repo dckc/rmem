@@ -29,8 +29,10 @@
     "body-parser": "^1.18.3",
     "docopt": "^0.6.2",
     "express": "^4.16.4",
+    "express-session": "^1.15.6",
     "require-text": "0.0.1",
     "sequelize": "^4.39.0",
-    "sqlite3": "^4.0.2"
+    "sqlite3": "^4.0.2",
+    "uuid4": "^1.1.4"
   }
 }
