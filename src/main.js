@@ -3,29 +3,44 @@
 // @flow
 
 const bodyParser = require('body-parser');
+const { docopt } = require('docopt');
 const requireText = require('require-text');
 
 const homePage = requireText('./tpl/index.html', require);
 const registerPage = requireText('./tpl/register.html', require);
 
-const memDBConfig = {
-  dialect: 'sqlite',
-  storage: ':memory:',
-};
+
+const usage = `
+Usage:
+  main.js [options] createdb
+  main.js [options] start
+
+Options:
+ --db=URI               DB URI [default: sqlite:rchain-membership.db]
+ --dialect=NAME         DB dialect [default: sqlite]
+ --port=N               HTTP port [default: 3000]
+ -h --help              show usage
+
+`;
 
 
-function main({ express, Sequelize }) {
+function main(argv, { express, Sequelize }) {
+  const cli = docopt(usage, { argv: argv.slice(2) });
   const app = express();
-  const port = 3000; // ISSUE: parameterize port
 
-  const sequelize = new Sequelize(memDBConfig);
+  console.log('@@DEBUG: cli:', cli);
+  const sequelize = new Sequelize(cli['--db'], { dialect: cli['--dialect'] });
   const rmem = Membership(sequelize, Sequelize);
-  rmem.createSchema() // ISSUE: only 1st time.
-    .then(() => {
-      rmem.route(app);
 
-      app.listen(port, () => console.log(`Example app listening on port ${port}!`));
-    });
+  if (cli.createdb) {
+    rmem.createSchema();
+  } else if (cli.start) {
+    const port = parseInt(cli['--port'], 10);
+
+    rmem.route(app);
+
+    app.listen(port, () => console.log(`Example app listening on port ${port}!`));
+  }
 }
 
 
@@ -68,7 +83,8 @@ function Membership(sequelize, DTypes) {
 if (require.main === module) {
   // Access ambient stuff only when invoked as main module.
   /* eslint-disable global-require */
-  main({
+  /* global process */
+  main(process.argv, {
     express: require('express'),
     Sequelize: require('sequelize'),
   });

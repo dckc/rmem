@@ -18,6 +18,7 @@ app for becoming an RChain coop member
 
 ```
 npm install
+npm run createdb
 ```
 
 ISSUE: TODO: DB setup
@@ -26,8 +27,6 @@ ISSUE: TODO: DB setup
 ## Usage (INSECURE)
 
 WARNING: missing CSRF protection
-
-NOTICE: DB is in-memory only
 
 ```
 npm start
