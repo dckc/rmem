@@ -1,0 +1,34 @@
+{
+  "name": "rmem",
+  "version": "0.1.0",
+  "description": "app for becoming an RChain coop member",
+  "main": "src/main.js",
+  "scripts": {
+    "flow-status": "flow status --from emacs",
+    "lint": "eslint src/**.js --format unix ",
+    "test": "npm run flow-status; npm run lint",
+    "start": "node src/main.js"
+  },
+  "keywords": [
+    "crud",
+    "coop",
+    "membership",
+    "forms",
+    "payments"
+  ],
+  "author": "Dan Connolly",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "eslint": "^5.6.1",
+    "eslint-config-airbnb-base": "^13.1.0",
+    "eslint-plugin-import": "^2.14.0",
+    "flow-bin": "^0.82.0"
+  },
+  "dependencies": {
+    "body-parser": "^1.18.3",
+    "express": "^4.16.4",
+    "require-text": "0.0.1",
+    "sequelize": "^4.39.0",
+    "sqlite3": "^4.0.2"
+  }
+}
