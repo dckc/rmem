@@ -2,9 +2,9 @@
 
 // @flow
 
-const bodyParser = require('body-parser');
 const { docopt } = require('docopt');
 const { Router } = require('express');
+const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
 const connectSessionSequelize = require('connect-session-sequelize');
 
@@ -30,8 +30,8 @@ Options:
 
 function main(argv, { uuid4, express, Sequelize, session, csrf }) {
   const cli = docopt(usage, { argv: argv.slice(2) });
-
   console.log('CLI configuration:', argv, cli);
+
   const sequelize = new Sequelize(cli['--db'], {
     dialect: cli['--dialect'],
     logging: cli['--logging'],
@@ -44,7 +44,6 @@ function main(argv, { uuid4, express, Sequelize, session, csrf }) {
     agreements.createSchema();
   } else if (cli.start) {
     const app = express();
-    const port = parseInt(cli['--port'], 10);
 
     sequelize
       .authenticate()
@@ -53,18 +52,12 @@ function main(argv, { uuid4, express, Sequelize, session, csrf }) {
 
         site.getSecret().then((secret) => {
           app.use(cookieParser());
-          app.use(session({
-            secret,
-            store: site.sessionStore(session),
-            resave: false, // not needed when touch() is supported
-            saveUninitialized: false,
-            proxy: true, // ISSUE: if you do SSL outside of node.
-          }));
-
+          app.use(site.sessionMiddleware(session, secret));
           app.use('/', agreements.router(csrf()));
         });
       });
 
+    const port = parseInt(cli['--port'], 10);
     app.listen(port, () => console.log(`Listening on port ${port}...`));
   }
 }
@@ -84,6 +77,16 @@ function Site(sequelize, DTypes) {
     return new SequelizeStore({ db: sequelize });
   }
 
+  function sessionMiddleware(session, secret) {
+    return session({
+      secret,
+      store: sessionStore(session),
+      resave: false, // not needed when touch() is supported
+      saveUninitialized: false,
+      proxy: true, // ISSUE: if you do SSL outside of node.
+    });
+  }
+
   function createSchema(secret, session) /*: Promise<*> */ {
     return Promise.all([
       App.sync(/* ISSUE: force? */).then(() => App.create({ secret, id: 1 })),
@@ -95,7 +98,7 @@ function Site(sequelize, DTypes) {
     return App.findById(1).then(app => app.secret);
   }
 
-  return def({ createSchema, getSecret, sessionStore });
+  return def({ createSchema, getSecret, sessionMiddleware });
 }
 
 
