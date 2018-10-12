@@ -15,7 +15,7 @@
     </div>
     <h1>Sign In</h1>
 
-    <form action="{{ signIn }}" method="POST">
+    <form action="{{ signIn.path }}" method="POST">
       <label>Email: <input name="email" /></label>
       <label>Password: <input name="password" type="password" /></label>
       <input type="hidden" name="_csrf" value="{{ csrf }}" />
@@ -23,7 +23,7 @@
       <input type="submit" value="Submit"  />
     </form>
 
-    <p>Not a member yet? Please <a href="{{ register }}">register</a>.</p>
+    <p>Not a member yet? Please <a href="{{ register.path }}">register</a>.</p>
     <p>ISSUE: TODO: style, copyright, privacy policy</p>
   </body>
 </html>

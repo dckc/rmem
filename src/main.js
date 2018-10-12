@@ -4,23 +4,14 @@
 
 const bodyParser = require('body-parser');
 const { docopt } = require('docopt');
-const requireText = require('require-text');
-const Mustache = require('mustache');
 const { Router } = require('express');
 const cookieParser = require('cookie-parser');
 const connectSessionSequelize = require('connect-session-sequelize');
 
+const { pages, render } = require('./views');
+
 const urlencodedParser = bodyParser.urlencoded({ extended: false });
-// We treat requireText as a "link time" operation, not a powerful capability.
-const homePage = requireText('./tpl/index.html', require);
-const registerPage = requireText('./tpl/register.html', require);
 const def = Object.freeze;
-const membershipAgreement = {
-  text: requireText('./tpl/Coop_Membership_Agreement.md', require),
-  revisionDate: new Date('2017-11-17'),
-  revisionHash: '8c033fb',
-  contentLength: 19054,
-};
 
 const usage = `
 Usage:
@@ -130,17 +121,10 @@ function Agreements(sequelize, DTypes) {
     return Agreement.sync(/* ISSUE: force? */);
   }
 
-  const paths = {
-    index: '/',
-    signIn: '/signIn',
-    register: '/register',
-    agreement: '/Coop_Membership_Agreement',
-  };
-
   function page(tpl) {
     return (req /*: express$Request */, res) => {
       // $FlowFixMe req.csrfToken
-      res.send(Mustache.render(tpl, { csrf: req.csrfToken(), ...paths }));
+      res.send(render(tpl, { csrf: req.csrfToken(), ...pages }));
     };
   }
 
@@ -178,7 +162,7 @@ function Agreements(sequelize, DTypes) {
       country,
       minAge,
       // password,
-      agreementRevised: membershipAgreement.revisionDate,
+      agreementRevised: pages.agreement.revisionDate,
     };
 
     return Agreement.create(record)
@@ -194,14 +178,14 @@ function Agreements(sequelize, DTypes) {
   function router(csrfProtection) {
     const it = Router();
 
-    it.get(paths.index, csrfProtection, page(homePage));
-    it.get(paths.register, csrfProtection, page(registerPage));
-    it.get(paths.agreement, csrfProtection, markdown(membershipAgreement.text));
+    it.get(pages.index.path, csrfProtection, page(pages.index.text));
+    it.get(pages.register.path, csrfProtection, page(pages.register.text));
+    it.get(pages.agreement.path, markdown(pages.agreement.text));
 
     // note csrfProtection has to go *after* urlencodedParser
     // ack dougwilson Feb 11, 2015
     // https://github.com/expressjs/csurf/issues/52#issuecomment-73981858
-    it.post(paths.register, urlencodedParser, csrfProtection, register);
+    it.post(pages.register.path, urlencodedParser, csrfProtection, register);
     // ISSUE: TODO: it.post(paths.signIn, urlencodedParser, signIn);
     return it;
   }
