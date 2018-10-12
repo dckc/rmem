@@ -32,7 +32,7 @@ Options:
 
 function main(argv, { fs, uuid4, express, Sequelize, session, csrf, bcrypt }) {
   const cli = docopt(usage, { argv: argv.slice(2) });
-  console.log('CLI configuration:', argv, cli);
+  console.log('CLI configuration:', cli);
 
   const sequelize = new Sequelize(cli['--db'], {
     dialect: cli['--dialect'],
@@ -57,7 +57,7 @@ function main(argv, { fs, uuid4, express, Sequelize, session, csrf, bcrypt }) {
     sequelize
       .authenticate()
       .then(() => {
-        console.log('register: DB authenticated');
+        console.log('DB authenticated');
 
         site.getConfig('session.secret').then((secret) => {
           app.use(cookieParser());
@@ -240,7 +240,7 @@ function Agreements(sequelize, DTypes, { hash, compare }) {
 
     return reCAPTCHA
       .then((config) => {
-        console.log('reCAPTCHA config:', config);
+        // console.log('reCAPTCHA config:', config);
         it.get(
           pages.register.path,
           csrfProtection,
