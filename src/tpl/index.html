@@ -2,6 +2,8 @@
 <html>
   <head>
     <title>Welcome to RChain - Membership</title>
+    <link rel="shortcut icon" type="image/x-icon"
+          href="https://www.rchain.coop/assets/favicon-red.png" />
   </head>
   <body>
     <div id="topNav">
@@ -13,14 +15,15 @@
     </div>
     <h1>Sign In</h1>
 
-    <form action="" method="POST">
+    <form action="{{ signIn }}" method="POST">
       <label>Email: <input name="email" /></label>
       <label>Password: <input name="password" type="password" /></label>
-      <input type="hidden" name="csrf"  />
-      ISSUE: sign in not implemented@@@
+      <input type="hidden" name="csrf" value="{{ csrf }}" />
+      ISSUE: sign in not implemented@@
       <input type="submit" value="Submit"  />
     </form>
 
-    <p>Not a member yet? Please <a href="/register">register</a>.</p>
+    <p>Not a member yet? Please <a href="{{ register }}">register</a>.</p>
+    <p>ISSUE: TODO: style, copyright, privacy policy</p>
   </body>
 </html>

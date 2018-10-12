@@ -1,4 +1,56 @@
 <form action="" method="POST">
-  <label>Name: <input name="name" /></label>
+  <div>
+    <!-- ISSUE: Internationalized names. i.e. full name, nickname, sort name -->
+    <label>First Name: <input name="firstName" /></label>
+    <label>Last Name: <input name="lastName" /></label>
+  </div>
+  <div>
+    <label>Email: <input name="email" /></label>
+  </div>
+  <div>
+    <label>
+      <input type="radio" name="entityType" value="PERSON" checked="checked" />
+      Individual Membership
+    </label>
+    <br />
+    <label>
+      <input type="radio" name="entityType" value="BUSINESS_ENTITY" />
+      Business Membership
+    </label>
+    <br />
+    <!-- ISSUE: hide if PERSON -->
+    <label>Company Name: <input name="companyName" /></label>
+  </div>
+  <div>
+    <label>Password: <input name="password" type="password" /></label>
+    <label>Confirm Password: <input name="confirmPassword" type="password" /></label>
+  </div>
+  <div>
+    <label>Country: <input name="country" /></label>
+  </div>
+  <div>
+    <iframe src="{{ agreement }}" width="600">
+      ... membership agreement text ...
+    </iframe>
+
+    <br />
+    <label>
+      <input type="checkbox" name="verifiedYears"  />
+      I am over 18 years of age and agree to membership terms & conditions and privacy policy.
+    </label>
+  </div>
+  <div>
+    <label>
+      <input type="checkbox" name="@@"  />
+      I'm not a robot
+      <br />
+      @@ISSUE: TODO: recapcha
+      <br />
+      <textarea name="g-recapcha-response">
+        ...
+      </textarea>
+    </label>
+  </div>
+  <input type="hidden" name="csrf" value="{{ csrf }}" />
   <input type="submit" value="Submit"  />
 </form>

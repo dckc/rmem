@@ -2,17 +2,26 @@
 
 // @flow
 
-const { EventEmitter } = require('events');
-
 const bodyParser = require('body-parser');
 const { docopt } = require('docopt');
 const requireText = require('require-text');
-const session = require('express-session');
+const session = require('express-session'); // ISSUE: ambient clock access?
+const Mustache = require('mustache');
 const { Router } = require('express');
+const cookieParser = require('cookie-parser');
+const SequelizeStore = require('connect-session-sequelize')(session.Store);
 
+const urlencodedParser = bodyParser.urlencoded({ extended: false });
+// We treat requireText as a "link time" operation, not a powerful capability.
 const homePage = requireText('./tpl/index.html', require);
 const registerPage = requireText('./tpl/register.html', require);
 const def = Object.freeze;
+const membershipAgreement = {
+  text: requireText('./tpl/Coop_Membership_Agreement.md', require),
+  revisionDate: new Date('2017-11-17'),
+  revisionHash: '8c033fb',
+  contentLength: 19054,
+};
 
 const usage = `
 Usage:
@@ -34,30 +43,35 @@ function main(argv, { uuid4, express, Sequelize }) {
 
   console.log('@@DEBUG: cli:', cli);
   const sequelize = new Sequelize(cli['--db'], { dialect: cli['--dialect'] });
-  const rmem = Membership(sequelize, Sequelize);
   const site = Site(sequelize, Sequelize);
+  const agreements = Agreements(sequelize, Sequelize, uuid4);
 
   if (cli.createdb) {
     site.createSchema(uuid4());
-    rmem.createSchema();
+    agreements.createSchema();
   } else if (cli.start) {
     const port = parseInt(cli['--port'], 10);
 
-    site.getSecret().then((secret) => {
-      const store = site.sessionStore();
-      app.use(session({
-        store,
-        secret,
-        generate: uuid4,
-        saveUninitialized: false,
-        resave: false,
-      }));
+    sequelize
+      .authenticate()
+      .then(() => {
+        console.log('register: DB authenticated');
 
-      app.use('/', rmem.router());
-    });
+        site.getSecret().then((secret) => {
+          app.use(cookieParser());
+          app.use(session({
+            secret,
+            store: new SequelizeStore({ db: sequelize }),
+            resave: false,
+            saveUninitialized: false,
+            proxy: true, // ISSUE: if you do SSL outside of node.
+          }));
 
+          app.use('/', agreements.router());
+        });
+      });
 
-    app.listen(port, () => console.log(`Example app listening on port ${port}!`));
+    app.listen(port, () => console.log(`Listening on port ${port}...`));
   }
 }
 
@@ -69,9 +83,16 @@ function main(argv, { uuid4, express, Sequelize }) {
  */
 function Site(sequelize, DTypes) {
   const App = sequelize.define('app', { secret: DTypes.STRING });
+
+  // following connect-session-sequelize docs
   const Session = sequelize.define('session', {
-    sid: { type: DTypes.STRING, primaryKey: true },
-    state: { type: DTypes.JSON },
+    sid: {
+      type: DTypes.STRING,
+      primaryKey: true,
+    },
+    userId: DTypes.STRING,
+    expires: DTypes.DATE,
+    data: DTypes.STRING(50000),
   });
 
   function createSchema(secret) /*: Promise<*> */ {
@@ -85,88 +106,134 @@ function Site(sequelize, DTypes) {
     return App.findById(1).then(app => app.secret);
   }
 
-  /**
-   * cf. https://www.npmjs.com/package/express-session
-   */
-  function sessionStore() {
-    function set(sid, state, next) {
-      sequelize.transaction((_t) => {
-        const sP = Session.findOrCreate(sid);
-        p2c(next, sP.then(([record, _created]) => record.update({ state })));
-      });
-    }
-
-    function get(sid, next) {
-      p2c(next, Session.findById(sid));
-    }
-
-    function touch(sid, next) {
-      const sP = Session.findById(sid);
-      p2c(next, sP.then(record => record.save()));
-    }
-
-    const emitter = new EventEmitter();
-    const self = { set, get, touch, on: (...args) => emitter.on(...args) };
-
-    // ISSUE: express-session writes to self.generate
-    // return def(self);
-    return self;
-  }
-
-  return def({ createSchema, getSecret, sessionStore });
+  return def({ createSchema, getSecret });
 }
 
 
 /**
- * Send result of promise to callback.
+ * Executing the membership agreement.
  */
-function p2c(callback, promise) {
-  promise
-    .then(result => callback(null, result))
-    .catch(oops => callback(oops));
-}
-
-
-function Membership(sequelize, DTypes) {
-  const Member = sequelize.define('member', { name: { type: DTypes.STRING } });
+function Agreements(sequelize, DTypes, genToken) {
+  // ISSUE: record IP address?
+  const Agreement = sequelize.define('agreement', {
+    // id
+    firstName: { type: DTypes.STRING, allowNull: false },
+    lastName: { type: DTypes.STRING, allowNull: false },
+    email: { type: DTypes.STRING, allowNull: false },
+    companyName: { type: DTypes.STRING },
+    country: { type: DTypes.STRING, allowNull: false },
+    minAge: { type: DTypes.ENUM, values: [18], allowNull: false },
+    agreementRevised: { type: DTypes.DATEONLY, allowNull: false },
+    // password: { type: DTypes.STRING, allowNull: false }, // ISSUE: password hashing
+    // createdAt, updatedAt
+  });
 
   function createSchema() /*: Promise<void> */ {
-    return Member.sync(/* ISSUE: force? */);
+    return Agreement.sync(/* ISSUE: force? */);
   }
 
-  function register(req /*: express$Request */, res) {
-    sequelize
-      .authenticate()
-      .then(() => {
-        console.log('register: DB authenticated');
+  const paths = {
+    index: '/',
+    signIn: '/signIn',
+    register: '/register',
+    agreement: '/Coop_Membership_Agreement',
+  };
+
+  function page(tpl) {
+    return (req /*: express$Request */, res) => {
+      // $FlowFixMe
+      const rs = req.session;
+
+      if (!rs.csrf) {
+        // ISSUE: need HMAC for csrf?
+        const csrf = genToken();
+        console.log('@@session gen csrf:', { csrf });
+        rs.csrf = csrf;
+      }
+
+      res.send(Mustache.render(tpl, { csrf: rs.csrf, ...paths }));
+    };
+  }
+
+  // flow needs a little help with express middleware types
+  function checkCSRF(req /*: express$Request */, res, next) {
+    const body = req.body || {};
+    // $FlowFixMe
+    const check = { actual: body.csrf, expected: req.session.csrf };
+    console.log('@@DEBUG checkCSRF:', check);
+
+    if (check.actual !== check.expected) {
+      console.log('bad CSRF token:', check);
+      res.sendStatus(403);
+    }
+    next();
+  }
+
+  function register(req /*: express$Request */, res, next) {
+    const body = { ...req.body };
+
+    // Trim extra spaces; treat empty strings as missing data.
+    Object.keys(body).forEach((k) => {
+      body[k] = body[k].trim();
+      if (body[k] === '') {
+        body[k] = null;
+      }
+    });
+
+    const {
+      // $FlowFixMe
+      firstName, lastName, companyName, country, email,
+      // $FlowFixMe
+      password, confirmPassword,
+    } = body;
+
+    if (password !== confirmPassword) {
+      console.log('passwords do not match');
+      res.sendStatus(400); // ISSUE: form verification UI
+      return null;
+    }
+
+    // $FlowFixMe
+    const minAge = body.verifiedYears ? 18 : null;
+    const record = {
+      firstName,
+      lastName,
+      email,
+      companyName,
+      country,
+      minAge,
+      // password,
+      agreementRevised: membershipAgreement.revisionDate,
+    };
+
+    return Agreement.create(record)
+      .then((it) => {
+        res.send(`<p>Welcome, ${it.firstName}</p>`); // ISSUE: TODO: portal.
+        console.log('Agreement:', it);
         // $FlowFixMe
-        const { name } = req.body;
-        Member.create({ name })
-          .then(() => {
-            res.send(`<p>Welcome, ${name}</p>`); // ISSUE: templates?
-          });
-      });
+        req.user = it.id;
+      })
+      .catch(oops => next(oops)); // ISSUE: form verification UI
   }
 
   function router() {
     const it = Router();
-    const urlencodedParser = bodyParser.urlencoded({ extended: false });
 
-    it.get('/', page(homePage));
-    // ISSUE: `/register` magic string
-    // should (statically) extract from homePage
-    it.get('/register', page(registerPage));
-    // ISSUE: csrf
-    it.post('/register', urlencodedParser, register);
+    it.get(paths.index, page(homePage));
+    it.get(paths.register, page(registerPage));
+    it.get(paths.agreement, markdown(membershipAgreement.text));
+
+    it.post(paths.register, urlencodedParser, checkCSRF, register);
+    // ISSUE: TODO: it.post(paths.signIn, urlencodedParser, signIn);
     return it;
   }
 
-  return def({ createSchema, router, register });
+  return def({ createSchema, router });
 }
 
-
-function page(txt) /*: express$Middleware*/ {
-  return (req /*: express$Request */, res, _next) => res.send(txt);
+function markdown(text) {
+  // ISSUE: markdown to HTML
+  return (req/*: express$Request */, res) => res.type('text/plain').send(text);
 }
 
 
