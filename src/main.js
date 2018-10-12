@@ -16,10 +16,12 @@ const def = Object.freeze;
 const usage = `
 Usage:
   main.js [options] createdb
+  main.js [options] recapchaConfig
   main.js [options] start
 
 Options:
  --db=URI               DB URI [default: sqlite:rchain-membership.db]
+ --recaptcha-key=FILE   config file [default: recapcha-key.json]
  --dialect=NAME         DB dialect [default: sqlite]
  --port=N               HTTP port [default: 3000]
  --logging              log database statements
@@ -28,7 +30,7 @@ Options:
 `;
 
 
-function main(argv, { uuid4, express, Sequelize, session, csrf, bcrypt }) {
+function main(argv, { fs, uuid4, express, Sequelize, session, csrf, bcrypt }) {
   const cli = docopt(usage, { argv: argv.slice(2) });
   console.log('CLI configuration:', argv, cli);
 
@@ -45,6 +47,8 @@ function main(argv, { uuid4, express, Sequelize, session, csrf, bcrypt }) {
   if (cli.createdb) {
     site.createSchema(uuid4(), session);
     agreements.createSchema();
+  } else if (cli.recapchaConfig) {
+    fs.readFile(cli['--recaptcha-key'], 'utf8', recapchaConfig(site));
   } else if (cli.start) {
     const app = express();
 
@@ -53,16 +57,29 @@ function main(argv, { uuid4, express, Sequelize, session, csrf, bcrypt }) {
       .then(() => {
         console.log('register: DB authenticated');
 
-        site.getSecret().then((secret) => {
+        site.getConfig('session.secret').then((secret) => {
           app.use(cookieParser());
           app.use(site.sessionMiddleware(session, secret));
-          app.use('/', agreements.router(csrf()));
+          const reCAPTCHA = site.getConfig('reCAPTCHA').then(txt => JSON.parse(txt));
+          agreements.router(csrf(), reCAPTCHA).then(r => app.use('/', r));
         });
       });
 
     const port = parseInt(cli['--port'], 10);
     app.listen(port, () => console.log(`Listening on port ${port}...`));
   }
+}
+
+function recapchaConfig(site) {
+  return (err, data) => {
+    if (err) { return console.log(err); }
+    const { siteKey, secretKey } = JSON.parse(data);
+    const missing = Object.entries({ siteKey, secretKey }).filter(([_, v]) => !v);
+    if (missing.length > 0) {
+      return console.error('reCAPTCHA config missing:', missing);
+    }
+    return site.setConfig('reCAPTCHA', JSON.stringify({ siteKey, secretKey }));
+  };
 }
 
 
@@ -72,7 +89,10 @@ function main(argv, { uuid4, express, Sequelize, session, csrf, bcrypt }) {
  * ISSUE: TODO: prune expired sessions.
  */
 function Site(sequelize, DTypes) {
-  const App = sequelize.define('app', { secret: DTypes.STRING });
+  const Config = sequelize.define('config', {
+    key: { type: DTypes.STRING, primaryKey: true },
+    value: { type: DTypes.STRING },
+  });
 
   function sessionStore(session) {
     const SequelizeStore = connectSessionSequelize(session.Store);
@@ -92,16 +112,21 @@ function Site(sequelize, DTypes) {
 
   function createSchema(secret, session) /*: Promise<*> */ {
     return Promise.all([
-      App.sync(/* ISSUE: force? */).then(() => App.create({ secret, id: 1 })),
+      Config.sync(/* ISSUE: force? */)
+        .then(() => Config.create({ key: 'session.secret', value: secret })),
       sessionStore(session).sync(/* ISSUE: force? */),
     ]);
   }
 
-  function getSecret() {
-    return App.findById(1).then(app => app.secret);
+  function getConfig(key) {
+    return Config.findById(key).then(record => record.value);
   }
 
-  return def({ createSchema, getSecret, sessionMiddleware });
+  function setConfig(key, value) {
+    return Config.upsert({ key, value });
+  }
+
+  return def({ createSchema, getConfig, setConfig, sessionMiddleware });
 }
 
 
@@ -128,10 +153,10 @@ function Agreements(sequelize, DTypes, { hash, compare }) {
     return Agreement.sync(/* ISSUE: force? */);
   }
 
-  function page(tpl) {
+  function page(tpl, extra) {
     return (req /*: express$Request */, res) => {
       // $FlowFixMe req.csrfToken
-      res.send(render(tpl, { csrf: req.csrfToken(), ...pages }));
+      res.send(render(tpl, { csrf: req.csrfToken(), ...pages, ...(extra || {}) }));
     };
   }
 
@@ -158,15 +183,24 @@ function Agreements(sequelize, DTypes, { hash, compare }) {
     const saltRounds = 10;
     return hash(password, saltRounds)
       .then(passwordHash => Agreement.create({ ...info, ...{ passwordHash } }))
-      .then(() => {
+      .then((agree) => {
         // $FlowFixMe property `user` is missing in `express$Request`
         req.user = info;
         res.send(`<p>Welcome, ${info.firstName}</p>`); // ISSUE: TODO: portal.
         // $FlowFixMe req.user
-        console.log('new Agreement:', req.user);
+        console.log('new Agreement:', agree.id);
         return info;
       })
       .catch(oops => next(oops)); // ISSUE: form verification UI
+  }
+
+  function noRobots(secretKey) {
+    return (req /*: express$Request */, _res, next) => {
+      const formData = { ...req.body };
+      const response = formData['g-recaptcha-response'];
+      console.log('@@TODO: noRobots back-end callback', { secretKey, response });
+      next();
+    };
   }
 
   function userInfo(record) {
@@ -191,19 +225,32 @@ function Agreements(sequelize, DTypes, { hash, compare }) {
       });
   }
 
-  function router(csrfProtection) {
+  function router(csrfProtection, reCAPTCHA) {
     const it = Router();
 
     it.get(pages.index.path, csrfProtection, page(pages.index.text));
-    it.get(pages.register.path, csrfProtection, page(pages.register.text));
     it.get(pages.agreement.path, markdown(pages.agreement.text));
 
     // note csrfProtection has to go *after* urlencodedParser
     // ack dougwilson Feb 11, 2015
     // https://github.com/expressjs/csurf/issues/52#issuecomment-73981858
-    it.post(pages.register.path, urlencodedParser, csrfProtection, register);
     it.post(pages.signIn.path, urlencodedParser, csrfProtection, signIn);
-    return it;
+
+    return reCAPTCHA
+      .then((config) => {
+        console.log('reCAPTCHA config:', config);
+        it.get(
+          pages.register.path,
+          csrfProtection,
+          page(pages.register.text, { siteKey: config.siteKey }),
+        );
+        it.post(
+          pages.register.path,
+          urlencodedParser, csrfProtection, noRobots(config.secretKey),
+          register,
+        );
+        return it;
+      });
   }
 
   return def({ createSchema, router });
@@ -241,6 +288,7 @@ if (require.main === module) {
   /* eslint-disable global-require */
   /* global process */
   main(process.argv, {
+    fs: require('fs'),
     express: require('express'),
     Sequelize: require('sequelize'),
     uuid4: require('uuid4'),
