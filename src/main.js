@@ -37,6 +37,8 @@ function main(argv, { fs, uuid4, express, Sequelize, session, csrf, bcrypt }) {
   const sequelize = new Sequelize(cli['--db'], {
     dialect: cli['--dialect'],
     logging: cli['--logging'],
+    // avoid deprecation warning
+    operatorsAliases: false,
   });
   const site = Site(sequelize, Sequelize);
   const agreements = Agreements(sequelize, Sequelize, {
