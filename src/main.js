@@ -32,6 +32,7 @@ Options:
  --db=URI               DB URI [default: sqlite:rchain-membership.db]
  --dialect=NAME         DB dialect [default: sqlite]
  --port=N               HTTP port [default: 3000]
+ --verbose              log database statements
  -h --help              show usage
 
 `;
@@ -42,7 +43,10 @@ function main(argv, { uuid4, express, Sequelize }) {
   const app = express();
 
   console.log('@@DEBUG: cli:', cli);
-  const sequelize = new Sequelize(cli['--db'], { dialect: cli['--dialect'] });
+  const sequelize = new Sequelize(cli['--db'], {
+    dialect: cli['--dialect'],
+    logging: cli['--verbose'],
+  });
   const site = Site(sequelize, Sequelize);
   const agreements = Agreements(sequelize, Sequelize, uuid4);
 
