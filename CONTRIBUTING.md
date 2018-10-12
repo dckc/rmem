@@ -2,9 +2,13 @@
 
 bog standard
 
-### TODO: watch
+### Watch
 
-stop / start on save is a pain.
+https://www.npmjs.com/package/nodemon
+
+```
+nodemon --ext js,html src/main.js start
+```
 
 ## ocaps
 
