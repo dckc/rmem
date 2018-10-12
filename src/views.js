@@ -4,6 +4,7 @@ const Mustache = require('mustache');
 // We treat requireText as a "link time" operation, not a powerful capability.
 const pages = {
   index: { path: '/', text: requireText('./tpl/index.html', require) },
+  signIn: { path: '/signIn' },
   register: { path: '/register', text: requireText('./tpl/register.html', require) },
   agreement: {
     path: '/Coop_Membership_Agreement',

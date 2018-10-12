@@ -28,7 +28,7 @@ Options:
 `;
 
 
-function main(argv, { uuid4, express, Sequelize, session, csrf }) {
+function main(argv, { uuid4, express, Sequelize, session, csrf, bcrypt }) {
   const cli = docopt(usage, { argv: argv.slice(2) });
   console.log('CLI configuration:', argv, cli);
 
@@ -37,7 +37,10 @@ function main(argv, { uuid4, express, Sequelize, session, csrf }) {
     logging: cli['--logging'],
   });
   const site = Site(sequelize, Sequelize);
-  const agreements = Agreements(sequelize, Sequelize);
+  const agreements = Agreements(sequelize, Sequelize, {
+    hash: bcrypt.hash,
+    compare: bcrypt.compare,
+  });
 
   if (cli.createdb) {
     site.createSchema(uuid4(), session);
@@ -105,20 +108,21 @@ function Site(sequelize, DTypes) {
 /**
  * Executing the membership agreement.
  */
-function Agreements(sequelize, DTypes) {
+function Agreements(sequelize, DTypes, { hash, compare }) {
   // ISSUE: record IP address?
-  const Agreement = sequelize.define('agreement', {
+  const fields = {
     // id
     firstName: { type: DTypes.STRING, allowNull: false },
     lastName: { type: DTypes.STRING, allowNull: false },
-    email: { type: DTypes.STRING, allowNull: false },
-    companyName: { type: DTypes.STRING },
+    email: { type: DTypes.STRING, allowNull: false, unique: true },
+    companyName: { type: DTypes.STRING, allowNull: true },
     country: { type: DTypes.STRING, allowNull: false },
     minAge: { type: DTypes.ENUM, values: [18], allowNull: false },
     agreementRevised: { type: DTypes.DATEONLY, allowNull: false },
-    // password: { type: DTypes.STRING, allowNull: false }, // ISSUE: password hashing
+    passwordHash: { type: DTypes.STRING, allowNull: false },
     // createdAt, updatedAt
-  });
+  };
+  const Agreement = sequelize.define('agreement', fields);
 
   function createSchema() /*: Promise<void> */ {
     return Agreement.sync(/* ISSUE: force? */);
@@ -132,50 +136,59 @@ function Agreements(sequelize, DTypes) {
   }
 
   function register(req /*: express$Request */, res, next) {
-    const body = { ...req.body };
+    const formData = { ...req.body };
 
-    // Trim extra spaces; treat empty strings as missing data.
-    Object.keys(body).forEach((k) => {
-      body[k] = body[k].trim();
-      if (body[k] === '') {
-        body[k] = null;
-      }
-    });
-
-    const {
-      // $FlowFixMe
-      firstName, lastName, companyName, country, email,
-      // $FlowFixMe
-      password, confirmPassword,
-    } = body;
-
+    const { password, confirmPassword } = formData;
     if (password !== confirmPassword) {
       console.log('passwords do not match');
-      res.sendStatus(400); // ISSUE: form verification UI
-      return null;
+      return res.sendStatus(400);
     }
 
-    // $FlowFixMe
-    const minAge = body.verifiedYears ? 18 : null;
-    const record = {
-      firstName,
-      lastName,
-      email,
-      companyName,
-      country,
-      minAge,
-      // password,
+    const { info, missing } = validate({
       agreementRevised: pages.agreement.revisionDate,
-    };
+      minAge: formData.verifiedYears ? 18 : '',
+      passwordHash: formData.password,
+      ...req.body,
+    }, fields);
+    if (missing.length > 0) {
+      console.error(`fields ${JSON.stringify(missing)} required but not provided.`);
+      return res.sendStatus(400); // ISSUE: form verification UI
+    }
 
-    return Agreement.create(record)
-      .then((it) => {
-        res.send(`<p>Welcome, ${it.firstName}</p>`); // ISSUE: TODO: portal.
-        console.log('Agreement:', it);
-        // $FlowFixMe
-        req.user = it;
+    const saltRounds = 10;
+    return hash(password, saltRounds)
+      .then(passwordHash => Agreement.create({ ...info, ...{ passwordHash } }))
+      .then(() => {
+        // $FlowFixMe property `user` is missing in `express$Request`
+        req.user = info;
+        res.send(`<p>Welcome, ${info.firstName}</p>`); // ISSUE: TODO: portal.
+        // $FlowFixMe req.user
+        console.log('new Agreement:', req.user);
+        return info;
       })
       .catch(oops => next(oops)); // ISSUE: form verification UI
+  }
+
+  function userInfo(record) {
+    const user = { ...record };
+    delete user.passwordHash;
+    return user;
+  }
+
+  function signIn(req /*: express$Request */, res, _next) {
+    const { email, password } = { ...req.body };
+    return Agreement.find({ where: { email } })
+      .then((agreement) => {
+        if (!agreement) { return res.sendStatus(403); }
+        return compare(password, agreement.passwordHash)
+          .then((ok) => {
+            if (!ok) { return res.sendStatus(403); }
+            // $FlowFixMe req.user
+            req.user = userInfo(agreement.dataValues);
+            res.send(`<p>Welcome back, ${req.user.firstName}</p>`); // ISSUE: TODO: portal.
+            return agreement;
+          });
+      });
   }
 
   function router(csrfProtection) {
@@ -189,12 +202,32 @@ function Agreements(sequelize, DTypes) {
     // ack dougwilson Feb 11, 2015
     // https://github.com/expressjs/csurf/issues/52#issuecomment-73981858
     it.post(pages.register.path, urlencodedParser, csrfProtection, register);
-    // ISSUE: TODO: it.post(paths.signIn, urlencodedParser, signIn);
+    it.post(pages.signIn.path, urlencodedParser, csrfProtection, signIn);
     return it;
   }
 
   return def({ createSchema, router });
 }
+
+
+function validate(body, fields) {
+  const info = { ...body };
+  // Trim extra spaces; treat empty strings as missing data.
+  Object.entries(info).forEach(([k, raw]) => {
+    const refined = typeof raw === 'string' ? raw.trim() : raw;
+    info[k] = refined === '' ? null : refined;
+  });
+
+  const missing = [];
+  Object.keys(fields).forEach((f) => {
+    if (!fields[f].allowNull && !info[f]) {
+      missing.push(f);
+    }
+  });
+
+  return { info, missing };
+}
+
 
 function markdown(text) {
   // ISSUE: markdown to HTML
@@ -213,5 +246,6 @@ if (require.main === module) {
     uuid4: require('uuid4'),
     session: require('express-session'),
     csrf: require('csurf'),
+    bcrypt: require('bcrypt'),
   });
 }
