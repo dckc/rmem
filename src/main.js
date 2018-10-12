@@ -5,11 +5,10 @@
 const bodyParser = require('body-parser');
 const { docopt } = require('docopt');
 const requireText = require('require-text');
-const session = require('express-session'); // ISSUE: ambient clock access?
 const Mustache = require('mustache');
 const { Router } = require('express');
 const cookieParser = require('cookie-parser');
-const SequelizeStore = require('connect-session-sequelize')(session.Store);
+const connectSessionSequelize = require('connect-session-sequelize');
 
 const urlencodedParser = bodyParser.urlencoded({ extended: false });
 // We treat requireText as a "link time" operation, not a powerful capability.
@@ -32,28 +31,28 @@ Options:
  --db=URI               DB URI [default: sqlite:rchain-membership.db]
  --dialect=NAME         DB dialect [default: sqlite]
  --port=N               HTTP port [default: 3000]
- --verbose              log database statements
+ --logging              log database statements
  -h --help              show usage
 
 `;
 
 
-function main(argv, { uuid4, express, Sequelize }) {
+function main(argv, { uuid4, express, Sequelize, session, csrf }) {
   const cli = docopt(usage, { argv: argv.slice(2) });
-  const app = express();
 
-  console.log('@@DEBUG: cli:', cli);
+  console.log('CLI configuration:', argv, cli);
   const sequelize = new Sequelize(cli['--db'], {
     dialect: cli['--dialect'],
-    logging: cli['--verbose'],
+    logging: cli['--logging'],
   });
   const site = Site(sequelize, Sequelize);
-  const agreements = Agreements(sequelize, Sequelize, uuid4);
+  const agreements = Agreements(sequelize, Sequelize);
 
   if (cli.createdb) {
-    site.createSchema(uuid4());
+    site.createSchema(uuid4(), session);
     agreements.createSchema();
   } else if (cli.start) {
+    const app = express();
     const port = parseInt(cli['--port'], 10);
 
     sequelize
@@ -65,13 +64,13 @@ function main(argv, { uuid4, express, Sequelize }) {
           app.use(cookieParser());
           app.use(session({
             secret,
-            store: new SequelizeStore({ db: sequelize }),
-            resave: false,
+            store: site.sessionStore(session),
+            resave: false, // not needed when touch() is supported
             saveUninitialized: false,
             proxy: true, // ISSUE: if you do SSL outside of node.
           }));
 
-          app.use('/', agreements.router());
+          app.use('/', agreements.router(csrf()));
         });
       });
 
@@ -88,21 +87,16 @@ function main(argv, { uuid4, express, Sequelize }) {
 function Site(sequelize, DTypes) {
   const App = sequelize.define('app', { secret: DTypes.STRING });
 
-  // following connect-session-sequelize docs
-  const Session = sequelize.define('session', {
-    sid: {
-      type: DTypes.STRING,
-      primaryKey: true,
-    },
-    userId: DTypes.STRING,
-    expires: DTypes.DATE,
-    data: DTypes.STRING(50000),
-  });
+  function sessionStore(session) {
+    const SequelizeStore = connectSessionSequelize(session.Store);
 
-  function createSchema(secret) /*: Promise<*> */ {
+    return new SequelizeStore({ db: sequelize });
+  }
+
+  function createSchema(secret, session) /*: Promise<*> */ {
     return Promise.all([
       App.sync(/* ISSUE: force? */).then(() => App.create({ secret, id: 1 })),
-      Session.sync(/* ISSUE: force? */),
+      sessionStore(session).sync(/* ISSUE: force? */),
     ]);
   }
 
@@ -110,14 +104,14 @@ function Site(sequelize, DTypes) {
     return App.findById(1).then(app => app.secret);
   }
 
-  return def({ createSchema, getSecret });
+  return def({ createSchema, getSecret, sessionStore });
 }
 
 
 /**
  * Executing the membership agreement.
  */
-function Agreements(sequelize, DTypes, genToken) {
+function Agreements(sequelize, DTypes) {
   // ISSUE: record IP address?
   const Agreement = sequelize.define('agreement', {
     // id
@@ -145,32 +139,9 @@ function Agreements(sequelize, DTypes, genToken) {
 
   function page(tpl) {
     return (req /*: express$Request */, res) => {
-      // $FlowFixMe
-      const rs = req.session;
-
-      if (!rs.csrf) {
-        // ISSUE: need HMAC for csrf?
-        const csrf = genToken();
-        console.log('@@session gen csrf:', { csrf });
-        rs.csrf = csrf;
-      }
-
-      res.send(Mustache.render(tpl, { csrf: rs.csrf, ...paths }));
+      // $FlowFixMe req.csrfToken
+      res.send(Mustache.render(tpl, { csrf: req.csrfToken(), ...paths }));
     };
-  }
-
-  // flow needs a little help with express middleware types
-  function checkCSRF(req /*: express$Request */, res, next) {
-    const body = req.body || {};
-    // $FlowFixMe
-    const check = { actual: body.csrf, expected: req.session.csrf };
-    console.log('@@DEBUG checkCSRF:', check);
-
-    if (check.actual !== check.expected) {
-      console.log('bad CSRF token:', check);
-      res.sendStatus(403);
-    }
-    next();
   }
 
   function register(req /*: express$Request */, res, next) {
@@ -215,19 +186,22 @@ function Agreements(sequelize, DTypes, genToken) {
         res.send(`<p>Welcome, ${it.firstName}</p>`); // ISSUE: TODO: portal.
         console.log('Agreement:', it);
         // $FlowFixMe
-        req.user = it.id;
+        req.user = it;
       })
       .catch(oops => next(oops)); // ISSUE: form verification UI
   }
 
-  function router() {
+  function router(csrfProtection) {
     const it = Router();
 
-    it.get(paths.index, page(homePage));
-    it.get(paths.register, page(registerPage));
-    it.get(paths.agreement, markdown(membershipAgreement.text));
+    it.get(paths.index, csrfProtection, page(homePage));
+    it.get(paths.register, csrfProtection, page(registerPage));
+    it.get(paths.agreement, csrfProtection, markdown(membershipAgreement.text));
 
-    it.post(paths.register, urlencodedParser, checkCSRF, register);
+    // note csrfProtection has to go *after* urlencodedParser
+    // ack dougwilson Feb 11, 2015
+    // https://github.com/expressjs/csurf/issues/52#issuecomment-73981858
+    it.post(paths.register, urlencodedParser, csrfProtection, register);
     // ISSUE: TODO: it.post(paths.signIn, urlencodedParser, signIn);
     return it;
   }
@@ -242,12 +216,15 @@ function markdown(text) {
 
 
 if (require.main === module) {
-  // Access ambient stuff only when invoked as main module.
+  // Access ambient powers (clock, random, files, network)
+  // only when invoked as main module.
   /* eslint-disable global-require */
   /* global process */
   main(process.argv, {
     express: require('express'),
     Sequelize: require('sequelize'),
     uuid4: require('uuid4'),
+    session: require('express-session'),
+    csrf: require('csurf'),
   });
 }
